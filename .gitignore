@@ -1,0 +1,40 @@
+# 1. Virtual Environments
+# Ignore the Python environment where your dependencies are installed
+venv/
+.venv/
+env/
+.env/
+
+# 2. Python Bytecode, Logs, and Dependency Files
+# Ignore temporary files created by Python
+__pycache__/
+*.pyc
+*.log
+
+# 3. Data Files
+# NEVER commit large dataset files to GitHub. They should be downloaded separately.
+# Since you use a small CSV for visualization, you might choose to commit it, 
+# but it's generally best practice to ignore it and load it from a service like DVC or a public link.
+# For a hackathon, let's ignore the large original, but keep the cleaned, smaller version if possible.
+data/kepler_cumulative.csv  # Assuming the original download file is large
+
+# 4. Machine Learning Artifacts
+# DO NOT commit the model training notebook output or large model binaries.
+# Your model is saved as xgb_model.json, which is small enough to commit, 
+# but we will ignore any larger model formats or backup files.
+# If your model file (xgb_model.json) exceeds 50MB, you must ignore it and use Git LFS!
+
+# If your model is a large binary (over 50MB):
+# models/xgb_model.json 
+
+# However, since you are using Streamlit Cloud (which needs the model file), 
+# if your JSON model file is small (under ~25MB), you can REMOVE the line above. 
+# For this project, assume it's small enough and keep the line commented out.
+
+# 5. Notebook Files
+# Ignore temporary and checkpoint files from Jupyter Notebooks
+.ipynb_checkpoints
+
+# 6. Streamlit Cache Files
+# Ignore temporary local caches created by Streamlit
+.streamlit/
