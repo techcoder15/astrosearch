@@ -1,184 +1,208 @@
 import streamlit as st
-import pandas as pd
-import numpy as np
 import joblib
-import xgboost as xgb
+import pandas as pd
 import plotly.express as px
-import matplotlib.pyplot as plt
+import numpy as np
 
-# --- CONFIGURATION ---
-MODEL_PATH = 'models/xgb_model.json' # Ensure this path is correct
-DATA_PATH = 'data/kepler_koi_data.csv' # Placeholder, only used for visualization/lookup
-
-# Set Streamlit Page Configuration (Dark Mode Aesthetic)
+# --- 1. Configuration and Setup ---
 st.set_page_config(
     page_title="AstroSearch: Exoplanet Classifier",
     layout="wide",
-    initial_sidebar_state="expanded",
-    menu_items={
-        'About': "AstroSearch - NASA Space App Challenge 2024"
-    }
+    initial_sidebar_state="expanded"
 )
 
-# Function to load model and data (using Streamlit's cache for speed)
+# Load trained model and scaler
 @st.cache_resource
-def load_resources():
-    """Loads the pre-trained XGBoost model and the original dataset for lookup."""
+def load_assets():
     try:
-        # Load the XGBoost model
-        model = xgb.XGBClassifier()
-        model.load_model(MODEL_PATH)
-
-        # Load the original data (for visualization and random lookup)
-        # NOTE: Filter and preprocess this data the same way it was for training
-        df = pd.read_csv(DATA_PATH)
-        df_clean = df[df['koi_disposition'].isin(['CONFIRMED', 'FALSE POSITIVE'])].copy()
-        df_clean['is_exoplanet'] = df_clean['koi_disposition'].apply(lambda x: 1 if x == 'CONFIRMED' else 0)
-        # Ensure only the 7 features are kept for simplicity
-        features = ['koi_period', 'koi_duration', 'koi_depth', 'koi_impact', 'koi_model_snr', 'koi_steff', 'koi_srad']
-        df_clean = df_clean.dropna(subset=features) # simple dropna for visualization purposes
-
-        return model, df_clean, features
+        model = joblib.load('models/xgb_model.joblib')
+        scaler = joblib.load('models/scaler.joblib')
+        return model, scaler
     except FileNotFoundError:
-        st.error("Error: Model or Data files not found. Check paths.")
-        return None, None, None
+        st.error("Model or Scaler not found! Please run 'train_model.py' first.")
+        st.stop()
 
-# Load all necessary components
-xgb_model, full_data, features = load_resources()
+# Function to load a subset of the original data for visualization
+@st.cache_data
+def load_visualization_data():
+    # Load the full data and filter for CONFIRMED/FALSE POSITIVE for visualization context
+    DATA_URL = "https://exoplanetarchive.ipac.caltech.edu/cgi-bin/nstedAPI/nph-nstedAPI?table=cumulative&select=koi_disposition,koi_depth,koi_period&format=csv"
+    df = pd.read_csv(DATA_URL, comment='#')
+    df_vis = df[df['koi_disposition'].isin(['CONFIRMED', 'FALSE POSITIVE'])].copy()
+    df_vis.dropna(subset=['koi_depth', 'koi_period'], inplace=True)
+    return df_vis
 
-if xgb_model is not None:
+# --- Load once at startup ---
+xgb_model, scaler = load_assets()
+df_vis = load_visualization_data()
+
+# Feature mapping (must match the order used in train_model.py)
+FEATURE_MAP = {
+    'Orbital Period (days)': 'koi_period',
+    'Transit Duration (hours)': 'koi_duration',
+    'Transit Depth (ppm)': 'koi_depth',
+    'Impact Parameter': 'koi_impact',
+    'Signal-to-Noise Ratio (SNR)': 'koi_model_snr',
+    'Stellar Effective Temp (K)': 'koi_steff',
+    'Stellar Radius (Solar Radii)': 'koi_srad'
+}
+
+# --- 2. UI/UX Plan (Streamlit-based) ---
+st.title("🌌 AstroSearch: Exoplanet Classifier")
+st.markdown("""
+    **Challenge:** Create an AI/ML model to automatically classify Kepler Objects of Interest (KOIs).
+    **Model:** XGBoost Classifier trained on Kepler data.
+    **Goal:** Input planetary parameters and predict if the signal is a **Confirmed Exoplanet** or a **False Positive**.
+""")
+
+st.markdown("---")
+
+# Dark Mode Aesthetic (using Streamlit's built-in components)
+# Input Panel in Sidebar
+with st.sidebar:
+    st.header("⚙️ Planetary Parameters Input")
+    st.markdown("Adjust the sliders below to define the characteristics of the signal you want to classify.")
     
-    # --- UI/UX: TITLE AND INTRODUCTION ---
-    st.title("🌌 AstroSearch: Exoplanet Classifier")
-    st.markdown("""
-        *Harnessing AI/ML to classify Kepler Objects of Interest (KOI) as either **Confirmed Exoplanet** or **False Positive**.*
-        This tool uses a pre-trained **XGBoost Classifier** to analyze key transit parameters.
-    """)
-    st.divider()
+    # Input Widgets - Using suitable min/max values based on typical Kepler data
+    input_data = {}
+    
+    input_data['Orbital Period (days)'] = st.slider(
+        'Orbital Period (days)', 
+        min_value=0.5, max_value=500.0, value=30.0, step=0.1, 
+        help="Time for the planet to orbit the star once."
+    )
+    input_data['Transit Duration (hours)'] = st.slider(
+        'Transit Duration (hours)', 
+        min_value=0.5, max_value=24.0, value=5.0, step=0.1,
+        help="Length of time the transit lasts."
+    )
+    input_data['Transit Depth (ppm)'] = st.number_input(
+        'Transit Depth (ppm)', 
+        min_value=10, max_value=100000, value=500, step=10,
+        help="The drop in stellar brightness (parts per million)."
+    )
+    input_data['Impact Parameter'] = st.slider(
+        'Impact Parameter', 
+        min_value=0.0, max_value=1.5, value=0.5, step=0.01,
+        help="The normalized distance from the center of the star to the center of the planet's transit path."
+    )
+    input_data['Signal-to-Noise Ratio (SNR)'] = st.number_input(
+        'Signal-to-Noise Ratio (SNR)', 
+        min_value=7.1, max_value=1000.0, value=100.0, step=1.0,
+        help="A measure of the detection's strength."
+    )
+    input_data['Stellar Effective Temp (K)'] = st.slider(
+        'Stellar Effective Temp (K)', 
+        min_value=2500, max_value=10000, value=5777, step=100,
+        help="Effective temperature of the host star."
+    )
+    input_data['Stellar Radius (Solar Radii)'] = st.slider(
+        'Stellar Radius (Solar Radii)', 
+        min_value=0.1, max_value=5.0, value=1.0, step=0.01,
+        help="Radius of the host star relative to the Sun's radius."
+    )
 
-    # --- MAIN CONTENT TABS ---
-    tab1, tab2, tab3 = st.tabs(["🚀 Prediction Tool", "📊 Model Performance & Data", "📚 Exoplanet Glossary"])
+    # Convert the collected inputs into the model's required DataFrame format
+    input_df = pd.DataFrame([input_data])
+    input_df.columns = list(FEATURE_MAP.values()) # Ensure column names match trained model features
 
-    with tab1:
-        st.header("1. Enter Exoplanet Parameters")
+# --- 3. Prediction Workflow ---
+if st.button('✨ Run AstroSearch Prediction', type='primary'):
+    
+    # 3.1. Preprocess Input
+    # Scale the input data using the saved scaler
+    scaled_input = scaler.transform(input_df)
+    
+    # 3.2. Run Prediction
+    # Predict probability of being a CONFIRMED exoplanet (class 1)
+    prediction_proba = xgb_model.predict_proba(scaled_input)[0][1]
+    
+    # Binary classification (0.5 threshold)
+    prediction_class = 'CONFIRMED EXOPLANET' if prediction_proba >= 0.5 else 'FALSE POSITIVE'
+    
+    # 3.3. Result Display
+    st.header("🎯 Prediction Result")
+    
+    col_result, col_conf = st.columns(2)
+    
+    # Use distinct icons/colors for impact
+    if prediction_class == 'CONFIRMED EXOPLANET':
+        emoji = "✅"
+        color_style = "background-color: #28a745; color: white; padding: 15px; border-radius: 10px;" # Green
+    else:
+        emoji = "❌"
+        color_style = "background-color: #dc3545; color: white; padding: 15px; border-radius: 10px;" # Red
+
+    with col_result:
+        st.markdown(f"""
+        <div style="{color_style}; text-align: center;">
+            <h3 style="color: white; margin: 0;">{emoji} CLASSIFICATION:</h3>
+            <h1 style="color: white; margin: 0; font-size: 3em;">{prediction_class}</h1>
+        </div>
+        """, unsafe_allow_html=True)
         
-        # --- SIDEBAR: INPUT & RANDOM SELECTION ---
-        st.sidebar.header("🎯 Parameter Input")
-        
-        # Random Exoplanet Selection
-        if st.sidebar.button("✨ Load Random Confirmed Exoplanet"):
-            random_exoplanet = full_data[full_data['is_exoplanet'] == 1].sample(1).iloc[0]
-            st.session_state.initial_params = random_exoplanet[features].to_dict()
-        
-        # Initialize session state for inputs
-        if 'initial_params' not in st.session_state:
-             st.session_state.initial_params = full_data[features].median().to_dict()
-
-
-        # Input Fields in the Sidebar
-        col_input_1, col_input_2 = st.sidebar.columns(2)
-
-        with col_input_1:
-            period = st.number_input("Orbital Period (days)", format="%.4f", value=st.session_state.initial_params['koi_period'], min_value=0.0)
-            duration = st.number_input("Transit Duration (hrs)", format="%.2f", value=st.session_state.initial_params['koi_duration'], min_value=0.0)
-            depth = st.number_input("Transit Depth (ppm)", value=st.session_state.initial_params['koi_depth'], min_value=0.0)
-            st.markdown("---")
-            temp = st.slider("Stellar Temperature (K)", min_value=2000, max_value=12000, value=int(st.session_state.initial_params['koi_steff']))
-
-        with col_input_2:
-            impact = st.slider("Impact Parameter", min_value=0.0, max_value=2.0, format="%.2f", value=st.session_state.initial_params['koi_impact'])
-            snr = st.number_input("Signal-to-Noise Ratio (SNR)", value=int(st.session_state.initial_params['koi_model_snr']), min_value=0)
-            srad = st.number_input("Stellar Radius (Solar Radii)", format="%.2f", value=st.session_state.initial_params['koi_srad'], min_value=0.0)
-
-        # --- PREDICTION LOGIC ---
-        user_input_array = np.array([[period, duration, depth, impact, snr, temp, srad]])
-        user_df = pd.DataFrame(user_input_array, columns=features)
-
-        if st.sidebar.button("🔎 **CLASSIFY OBJECT**", type="primary"):
-            
-            # Predict
-            prediction_proba = xgb_model.predict_proba(user_df)[:, 1][0]
-            prediction_class = xgb_model.predict(user_df)[0]
-            
-            # Display Result
-            col_result, col_vis = st.columns([1, 2])
-
-            with col_result:
-                st.subheader("Classification Result")
-                if prediction_class == 1:
-                    st.success(f"✅ **CONFIRMED EXOPLANET**", icon="🪐")
-                else:
-                    st.error(f"❌ **FALSE POSITIVE**", icon="🚧")
-                
-                st.metric("Confidence Score", f"{prediction_proba * 100:.2f}%")
-                
-                st.info("The prediction is based on the correlation of your input parameters with the confirmed and false positive transits in the Kepler data.")
-
-
-            with col_vis:
-                st.subheader("Data Context: Transit Depth vs. Period")
-                
-                # Plot User Point vs Historical Data (using Plotly for interactivity)
-                fig = px.scatter(
-                    full_data, 
-                    x='koi_period', 
-                    y='koi_depth', 
-                    color='koi_disposition', 
-                    log_x=True,
-                    title='Historical KOI Data (Transit Depth vs. Period)',
-                    color_discrete_map={'CONFIRMED': 'green', 'FALSE POSITIVE': 'red', 'CANDIDATE': 'yellow'},
-                    hover_data=['koi_period', 'koi_depth', 'koi_disposition']
-                )
-                
-                # Add the user's input point
-                fig.add_scatter(x=[period], y=[depth], mode='markers', 
-                                name='Your Input', marker=dict(size=15, color='white', symbol='star'))
-                
-                st.plotly_chart(fig, use_container_width=True)
-
-
-    with tab2:
-        st.header("2. Model Performance & Feature Analysis")
-        
-        # --- FEATURE IMPORTANCE CHART ---
-        st.subheader("A. Feature Importance (How the Model Decides)")
-        
-        # NOTE: This requires running feature importance extraction during or after training
-        # For a hackathon, hardcode typical importances if time is short, but dynamic is better.
-        try:
-            # Dynamic Feature Importance (Requires 'feature_importances_' from a fitted model)
-            importances = xgb_model.feature_importances_
-            feature_importance_df = pd.DataFrame({'Feature': features, 'Importance': importances}).sort_values(by='Importance', ascending=False)
-            
-            fig_importance = px.bar(
-                feature_importance_df, 
-                x='Importance', 
-                y='Feature', 
-                orientation='h',
-                title="XGBoost Feature Importance Score",
-                color='Importance',
-                color_continuous_scale=px.colors.sequential.Plasma
-            )
-            st.plotly_chart(fig_importance, use_container_width=True)
-            st.caption("Transit Depth and Signal-to-Noise Ratio (SNR) are typically the strongest indicators.")
-            
-        except:
-             st.warning("Feature importance data not fully available in the loaded model. Skipping chart.")
-
-
-    with tab3:
-        st.header("3. Exoplanet Terminology Glossary")
-        st.markdown("A quick reference for the terms used in the Kepler datasets.")
-
-        st.subheader("Key Terms")
-        st.markdown(
-            """
-            * **Kepler Object of Interest (KOI):** Any star observed by the Kepler mission that shows transit-like features, making it a candidate for hosting a planet.
-            * **Transit Method:** The primary method used by Kepler and TESS, where a planet passes in front of its star, causing a temporary, periodic dip in the star's brightness.
-            * **Orbital Period:** The time it takes for the exoplanet to complete one full orbit around its star (measured in Earth days).
-            * **Transit Duration:** The length of time the planet takes to cross the face of the star (measured in hours).
-            * **Transit Depth:** The maximum dip in the star's light, often measured in parts per million (ppm). **This is a key indicator of planet size relative to the star.**
-            * **Signal-to-Noise Ratio (SNR):** A measure of the strength of the transit signal relative to the noise (random fluctuations) in the light curve. **A higher SNR means a more confident detection.**
-            * **Impact Parameter:** The distance between the center of the stellar disk and the center of the planet's path as it crosses the star, normalized by the stellar radius.
-            """
+    with col_conf:
+        st.metric(
+            label="Confidence Score (Probability of Confirmed)", 
+            value=f"{prediction_proba*100:.2f}%", 
+            delta_color="off"
         )
+        st.info("The Confidence Score is the model's certainty that the signal is a **Confirmed Exoplanet**.")
+
+    st.markdown("---")
+
+    # --- 4. Visualization & Educational Features ---
+    st.header("📊 Context & Exploration")
+    
+    # 4.1. Feature Importance Chart
+    st.subheader("Model Feature Importance")
+    # Get feature importances from the trained model
+    feature_importances = pd.Series(xgb_model.feature_importances_, index=list(FEATURE_MAP.values()))
+    fig_importance = px.bar(
+        feature_importances.sort_values(ascending=True),
+        orientation='h',
+        title='Which Features Drive the Prediction?',
+        labels={'value': 'Importance Score', 'index': 'Feature Name'}
+    ).update_layout(xaxis_title='Importance Score', showlegend=False)
+    st.plotly_chart(fig_importance, use_container_width=True)
+    
+    # 4.2. Scatter Plot of Data
+    st.subheader("Your Input Relative to Historical Data")
+    
+    # Define the user point for the plot
+    user_point = pd.DataFrame({
+        'koi_period': [input_df['koi_period'].iloc[0]],
+        'koi_depth': [input_df['koi_depth'].iloc[0]],
+        'koi_disposition': ['YOUR INPUT']
+    })
+    
+    # Combine historical data and user input
+    plot_data = pd.concat([df_vis[['koi_period', 'koi_depth', 'koi_disposition']], user_point], ignore_index=True)
+    
+    # Create the scatter plot
+    fig_scatter = px.scatter(
+        plot_data, 
+        x='koi_period', 
+        y='koi_depth', 
+        color='koi_disposition',
+        log_x=True, # Period is better viewed on a log scale
+        log_y=True, # Depth is often better viewed on a log scale
+        hover_data=['koi_period', 'koi_depth'],
+        title='Exoplanet Period vs. Transit Depth (Log Scale)',
+        labels={'koi_period': 'Orbital Period (days, Log Scale)', 'koi_depth': 'Transit Depth (ppm, Log Scale)'},
+        color_discrete_map={'CONFIRMED': '#1f77b4', 'FALSE POSITIVE': '#ff7f0e', 'YOUR INPUT': '#e30022'} # Custom colors
+    )
+    # Highlight the user's point more prominently
+    fig_scatter.update_traces(marker=dict(size=10, line=dict(width=2, color='DarkSlateGrey')), selector=dict(name='YOUR INPUT'))
+
+    st.plotly_chart(fig_scatter, use_container_width=True)
+
+# --- 5. Exoplanet Glossary (Optional but great for education) ---
+with st.expander("📚 Exoplanet Glossary"):
+    st.markdown("""
+    - **KOI (Kepler Object of Interest):** A star observed by the Kepler mission that appears to have a transiting planet candidate.
+    - **Transit:** The event where a planet passes in front of its star, causing a measurable dip in the star's brightness.
+    - **Transit Depth (ppm):** The percentage (in parts per million) of the star's light that is blocked by the planet. Larger planets cause deeper transits.
+    - **Impact Parameter:** A measure of how centrally the transit crosses the star's disc. A value of 0 is a perfect center-crossing.
+    - **SNR (Signal-to-Noise Ratio):** The ratio of the strength of the exoplanet signal (the transit) to the background noise. A high SNR means a more reliable detection.
+    """)
