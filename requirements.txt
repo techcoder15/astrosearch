@@ -1,11 +1,7 @@
-# Core ML/Data
+streamlit
 pandas
 numpy
-xgboost
 scikit-learn
+xgboost
 joblib
-
-# Web App/Visualization
-streamlit
 plotly
-matplotlib
