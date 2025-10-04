@@ -1,0 +1,11 @@
+# Core ML/Data
+pandas
+numpy
+xgboost
+scikit-learn
+joblib
+
+# Web App/Visualization
+streamlit
+plotly
+matplotlib
